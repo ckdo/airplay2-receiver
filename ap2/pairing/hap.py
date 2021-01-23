@@ -2,6 +2,7 @@ import struct
 import socket
 import hashlib
 import threading
+from os import path
 
 from hexdump import hexdump
 
@@ -10,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization
 import nacl.signing
 from Crypto.Cipher import ChaCha20_Poly1305
+from nacl.utils import random
 
 from . import srp
 
@@ -22,14 +24,14 @@ class PairingMethod:
     LIST_PAIRINGS = b'\x05'
 
 class PairingErrors:
-    RESERVED = 0
-    UNKNOWN = 1
-    AUTHENTICATION = 2
-    BACKOFF = 3
-    MAXPEERS = 4
-    MAXTRIES = 5
-    UNAVAILABLE = 6
-    BUSY = 7
+    RESERVED = b'\x00'
+    UNKNOWN = b'\x01'
+    AUTHENTICATION = b'\x02'
+    BACKOFF = b'\x03'
+    MAXPEERS = b'\x04'
+    MAXTRIES = b'\x05'
+    UNAVAILABLE = b'\x06'
+    BUSY = b'\x07'
 
 class PairingFlags:
     TRANSIENT = b'\x10'
@@ -102,6 +104,22 @@ class Hap:
         self.transient = False
         self.encrypted = False
         self.pair_setup_steps_n = 5
+        self.accessory_id = b"00000000-0000-0000-0000-f0989d7cbbab"
+
+        accessory_secret_seed = None
+        if not path.exists("./pairings/accessory-secret-seed"):
+            accessory_secret_seed = random(nacl.bindings.crypto_sign_SEEDBYTES)
+            secret_seed_file = open("./pairings/accessory-secret-seed", "wb")
+            secret_seed_file.write(accessory_secret_seed)
+            secret_seed_file.close()
+        else:
+            secret_seed_file = open("./pairings/accessory-secret-seed", "rb")
+            accessory_secret_seed = secret_seed_file.read()
+            self.accessory_ltsk = nacl.signing.SigningKey(accessory_secret_seed)
+            secret_seed_file.close()
+
+        self.accessory_ltsk = nacl.signing.SigningKey(accessory_secret_seed, encoder=nacl.encoding.RawEncoder)
+        self.accessory_ltpk = bytes(self.accessory_ltsk.verify_key)
 
     def request(self, req):
         req = Tlv8.decode(req)
@@ -140,8 +158,9 @@ class Hap:
             res = self.pair_verify_m1_m2(req[Tlv8.Tag.PUBLICKEY])
         elif req[Tlv8.Tag.STATE] == PairingState.M3:
             print("-----\tPair-Verify [2/2]")
-            res = self.pair_verify_m3_m4(req[Tlv8.Tag.ENCRYPTEDDATA])
-            self.encrypted = True
+            status, res = self.pair_verify_m3_m4(req[Tlv8.Tag.ENCRYPTEDDATA])
+            if status:
+                self.encrypted = True
         return Tlv8.encode(res)
 
 
@@ -196,15 +215,14 @@ class Hap:
 
         verify_key = nacl.signing.VerifyKey(self.device_ltpk)
         verify_key.verify(device_info, device_sig)
+        
+        device_pairing_file = open("./pairings/" + self.device_id.decode("utf-8") + ".pub", "wb")
+        device_pairing_file.write(self.device_ltpk)
+        device_pairing_file.close()
 
     def pair_setup_m5_m6_3(self, session_key):
         prk = hkdf.hkdf_extract(b"Pair-Setup-Accessory-Sign-Salt", self.ctx.session_key)
         accessory_x = hkdf.hkdf_expand(prk, b"Pair-Setup-Accessory-Sign-Info", 32)
-
-        self.accessory_ltsk = nacl.signing.SigningKey.generate()
-        self.accessory_ltpk = bytes(self.accessory_ltsk.verify_key)
-
-        self.accessory_id = b"00000000-0000-0000-0000-f0989d7cbbab"
 
         accessory_info = accessory_x + self.accessory_id + self.accessory_ltpk
         accessory_signed = self.accessory_ltsk.sign(accessory_info)
@@ -225,9 +243,9 @@ class Hap:
 
         self.accessory_curve = x25519.X25519PrivateKey.generate()
         self.accessory_curve_public = self.accessory_curve.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw
-    )
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        )
         self.accessory_shared_key = self.accessory_curve.exchange(x25519.X25519PublicKey.from_public_bytes(client_public))
 
         accessory_info = self.accessory_curve_public + self.accessory_id + client_public
@@ -261,11 +279,18 @@ class Hap:
         device_sig = sub_tlv[Tlv8.Tag.SIGNATURE]
 
         device_info = self.client_curve_public + device_id + self.accessory_curve_public
-        verify_key = nacl.signing.VerifyKey(self.device_ltpk)
-        verify_key.verify(device_info, device_sig)
+        device_pairing_filepath = "./pairings/" + device_id.decode("utf-8") + ".pub"
+        if path.exists(device_pairing_filepath):
+            device_pairing_file = open(device_pairing_filepath, "rb")
+            self.device_ltpk = device_pairing_file.read()
+            device_pairing_file.close()
 
-        return [ Tlv8.Tag.STATE, PairingState.M4 ]
+            verify_key = nacl.signing.VerifyKey(self.device_ltpk)
+            verify_key.verify(device_info, device_sig)
 
+            return True, [ Tlv8.Tag.STATE, PairingState.M4 ]
+        else:
+            return False, [ Tlv8.Tag.ERROR, PairingErrors.AUTHENTICATION ]
 
 #
 # Inspired from HAP-Python: https://github.com/ikalchev/HAP-python

@@ -54,7 +54,11 @@ FEATURES = 0x8030040780a00
 # FEATURES = 0x30040780a00
 # FEATURES = 0x8030040780a00 | (1 << 27)
 
-FEATURES = 0x1c340405fca00
+# Commence par un /pair-verify puis un /pair-setup transient Pourquoi ?
+FEATURES = 0xCB40485FCA00
+# Normal, commence par un pair-setup...
+FEATURES = 0xC340405F4A00
+FEATURES = 0xC340405F4A00
 
 DEVICE_ID = None
 IPV4 = None
@@ -105,7 +109,7 @@ def setup_global_structs(args):
         'model': 'One',
         'name': 'Camera da letto',
         'nameIsFactoryDefault': False,
-        'pi': 'ba5cb8df-7f14-4249-901a-5e748ce57a93', # UUID generated casually..
+        'pi': 'fa5cb8df-7f14-4249-901a-5e748ce57a93', # UUID generated casually..
         'protocolVersion': '1.1',
         'sdk': 'AirPlay;2.0.2',
         'sourceVersion': '366.0',
@@ -153,11 +157,11 @@ def setup_global_structs(args):
             "acl": "0",
             "rsf": "0x0",
             "fv": "p20.78000.12",
-            "pi": "5dccfd20-b166-49cc-a593-6abd5f724ddb", # UUID generated casually
-            "gid": "5dccfd20-b166-49cc-a593-6abd5f724ddb", # UUID generated casually
+            "pi": "6dccfd20-b166-49cc-a593-6abd5f724ddb", # UUID generated casually
+            "gid": "6dccfd20-b166-49cc-a593-6abd5f724ddb", # UUID generated casually
             "gcgl": "0",
             # "vn": "65537",
-            "pk": "de352b0df39042e201d31564049023af58a106c6d904b74a68aa65012852997f"
+            "pk": "ee352b0df39042e201d31564049023af58a106c6d904b74a68aa65012852997f"
             }
 
 class AP2Handler(http.server.BaseHTTPRequestHandler):
