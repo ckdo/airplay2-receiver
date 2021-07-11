@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import time
@@ -21,7 +22,7 @@ from biplist import readPlistFromString, writePlistToString
 from ap2.connections.audio import RTPBuffer
 from ap2.playfair import PlayFair
 from ap2.utils import get_volume, set_volume
-from ap2.pairing.hap import Hap, HAPSocket
+from ap2.pairing.hap import Hap, HAPSocket, Tlv8
 from ap2.connections.event import Event
 from ap2.connections.stream import Stream
 
@@ -55,10 +56,12 @@ FEATURES = 0x8030040780a00
 # FEATURES = 0x8030040780a00 | (1 << 27)
 
 # Commence par un /pair-verify puis un /pair-setup transient Pourquoi ?
-FEATURES = 0xCB40485FCA00
+#FEATURES = 0xCB40485FCA00
 # Normal, commence par un pair-setup...
-FEATURES = 0xC340405F4A00
-FEATURES = 0xC340405F4A00
+#FEATURES = 0xC340405F4A00
+#FEATURES = 0xC340405FCA00
+FEATURES = 0x1c340405fca00
+PI = b'aa5cb8df-7f14-4249-901a-5e748ce57a93'
 
 DEVICE_ID = None
 IPV4 = None
@@ -71,7 +74,7 @@ HTTP_CT_PARAM = "text/parameters"
 HTTP_CT_IMAGE = "image/jpeg"
 HTTP_CT_DMAP = "application/x-dmap-tagged"
 
-def setup_global_structs(args):
+def setup_global_structs(device_name):
     global sonos_one_info
     global sonos_one_setup
     global sonos_one_setup_data
@@ -107,16 +110,15 @@ def setup_global_structs(args):
         'keepAliveSendStatsAsBody': True,
         'manufacturer': 'Sonos',
         'model': 'One',
-        'name': 'Camera da letto',
+        'name': device_name,
         'nameIsFactoryDefault': False,
-        'pi': 'fa5cb8df-7f14-4249-901a-5e748ce57a93', # UUID generated casually..
+        'pi': PI.decode('utf-8'),
         'protocolVersion': '1.1',
         'sdk': 'AirPlay;2.0.2',
         'sourceVersion': '366.0',
         'statusFlags': 4,
-        # 'statusFlags': 0x404 # Sonos One
         }
-
+    
     if DISABLE_VM:
         volume = 0
     else: 
@@ -175,6 +177,9 @@ class AP2Handler(http.server.BaseHTTPRequestHandler):
         self.protocol_version = "RTSP/1.0"
         self.close_connection = 0
         return r
+
+    def process_info(self, device_name):
+        sonos_one_info["Name"] = "TOTO"
 
     def send_response(self, code, message=None):
         if message is None:
@@ -260,6 +265,18 @@ class AP2Handler(http.server.BaseHTTPRequestHandler):
             print(self.headers)
             print("POST /pair-verify")
             self.handle_pair_verify()
+        elif self.path == "/pair-add":
+            print(self.headers)
+            print("POST /pair-add")
+            self.handle_pair_add()
+        elif self.path == "/pair-list":
+            print(self.headers)
+            print("POST /pair-list")
+            self.handle_pair_list()
+        elif self.path == "/configure":
+            print(self.headers)
+            print("POST /configure")
+            self.handle_configure()
         else:
             print("POST %s Not implemented!" % self.path)
             self.send_error(404)
@@ -551,7 +568,7 @@ class AP2Handler(http.server.BaseHTTPRequestHandler):
         hexdump(body)
 
         if not self.server.hap:
-            self.server.hap = Hap()
+            self.server.hap = Hap(PI)
         res = self.server.hap.pair_setup(body)
 
         self.send_response(200)
@@ -568,11 +585,11 @@ class AP2Handler(http.server.BaseHTTPRequestHandler):
 
     def handle_pair_verify(self):
         content_len = int(self.headers["Content-Length"])
-
         body = self.rfile.read(content_len)
+        hexdump(body)
 
         if not self.server.hap:
-            self.server.hap = Hap()
+            self.server.hap = Hap(PI)
         res = self.server.hap.pair_verify(body)
 
         self.send_response(200)
@@ -586,6 +603,74 @@ class AP2Handler(http.server.BaseHTTPRequestHandler):
         if self.server.hap.encrypted:
             hexdump(self.server.hap.accessory_shared_key)
             self.upgrade_to_encrypted(self.server.hap.accessory_shared_key)
+
+    def handle_pair_add(self):
+        print("pair-add %s" % self.path)
+        print(self.headers)
+        content_len = int(self.headers["Content-Length"])
+        if content_len > 0:
+            body = self.rfile.read(content_len)
+
+            res = self.server.hap.pair_add(body)
+            self.send_response(200)
+            self.send_header("Server", self.version_string())
+            self.send_header("CSeq", self.headers["CSeq"])
+            self.send_header("Content-Length", len(res))
+            self.end_headers()
+            self.wfile.write(res)
+
+    def handle_pair_list(self):
+        print("pair-list %s" % self.path)
+        print(self.headers)
+        content_len = int(self.headers["Content-Length"])
+        if content_len > 0:
+            body = self.rfile.read(content_len)
+
+            res = self.server.hap.pair_list(body)
+            hexdump(res)
+        self.send_response(200)
+        self.send_header("Server", self.version_string())
+        self.send_header("CSeq", self.headers["CSeq"])
+        self.send_header("Content-Length", len(res))
+        self.end_headers()
+        self.wfile.write(res)
+
+    def handle_configure(self):
+        print("configure %s" % self.path)
+        print(self.headers)
+        content_len = int(self.headers["Content-Length"])
+        if content_len > 0:
+            body = self.rfile.read(content_len)
+            plist = readPlistFromString(body)
+            self.pp.pprint(plist)
+
+        #accessory2_ltsk = nacl.signing.SigningKey.generate()
+        #accessory2_ltpk = bytes(accessory2_ltsk.verify_key)
+        #"248E34D7-A496-465E-A2A8-82AD0D099052"
+
+        accessory_id, accessory_ltpk = self.server.hap.configure()
+        configure_info = {
+            'Identifier': accessory_id.decode('utf-8'),
+            'Enable_HK_Access_Control': True,
+            'PublicKey': accessory_ltpk,
+            'Device_Name': 'NEWBORNE',
+            'Access_Control_Level': 0
+        }
+
+        res = writePlistToString(configure_info)
+        self.pp.pprint(configure_info)
+        file = open("./plist.bin", "wb")
+        file.write(res)
+        file.close()
+
+        self.send_response(200)
+        self.send_header("Content-Length", len(res))
+        self.send_header("Content-Type", HTTP_CT_BPLIST)
+        self.send_header("Server", self.version_string())
+        self.send_header("CSeq", self.headers["CSeq"])
+        self.end_headers()
+
+        self.wfile.write(res)
 
     def handle_info(self):
         if "Content-Type" in self.headers:
@@ -732,9 +817,11 @@ if __name__ == "__main__":
     IPV4 = ifen[ni.AF_INET][0]["addr"]
     IPV6 = ifen[ni.AF_INET6][0]["addr"].split("%")[0]
 
-    setup_global_structs(args)
+    setup_global_structs(args.mdns)
 
     print("Interface: %s" % IFEN)
+    logging.basicConfig(level=logging.DEBUG)
+
     print("IPv4: %s" % IPV4)
     print("IPv6: %s" % IPV6)
     print()

@@ -1,3 +1,5 @@
+import logging
+import os
 import struct
 import socket
 import hashlib
@@ -86,11 +88,16 @@ class Tlv8:
         for i in range(0, len(req), 2):
             tag = req[i]
             value = req[i+1]
-            length = len(value)
+            if value:
+                length = len(value)
+            else:
+                length = 0
 
             # print("enc tag=%d length=%d value=%s" % (tag, length, value.hex()))
             if length <= 255:
-                res += bytes([tag]) + bytes([length]) + value
+                res += bytes([tag]) + bytes([length])
+                if value:
+                    res += value
             else:
                 for i in range(0, length // 255):
                     res += bytes([tag]) + b"\xff" + value[i*255:(i+1)*255]
@@ -100,11 +107,11 @@ class Tlv8:
         return res
 
 class Hap:
-    def __init__(self):
+    def __init__(self, identifyer):
         self.transient = False
         self.encrypted = False
         self.pair_setup_steps_n = 5
-        self.accessory_id = b"00000000-0000-0000-0000-f0989d7cbbab"
+        self.accessory_id = identifyer
 
         accessory_secret_seed = None
         if not path.exists("./pairings/accessory-secret-seed"):
@@ -120,6 +127,9 @@ class Hap:
 
         self.accessory_ltsk = nacl.signing.SigningKey(accessory_secret_seed, encoder=nacl.encoding.RawEncoder)
         self.accessory_ltpk = bytes(self.accessory_ltsk.verify_key)
+        #pub_acc_file = open("./pairings/accessory-" + self.accessory_id.decode('utf-8') + ".pub", "wb")
+        #pub_acc_file.write(self.accessory_ltpk)
+        #pub_acc_file.close()
 
     def request(self, req):
         req = Tlv8.decode(req)
@@ -163,6 +173,44 @@ class Hap:
                 self.encrypted = True
         return Tlv8.encode(res)
 
+    def pair_add(self, req):
+        req = Tlv8.decode(req)
+        identifyer = req[Tlv8.Tag.IDENTIFIER]
+        device_ltpk = req[Tlv8.Tag.PUBLICKEY]
+        perm = req[Tlv8.Tag.PERMISSIONS]
+
+        logging.debug("Saving persistent pairing for " + identifyer.decode("utf-8"))
+        device_pairing_file = open("./pairings/" + identifyer.decode("utf-8") + ".hap.pub", "wb")
+        device_pairing_file.write(device_ltpk)
+        device_pairing_file.close()
+
+        res = [ Tlv8.Tag.STATE, PairingState.M2 ]
+        return Tlv8.encode(res)
+
+    def pair_list(self, req):
+        req = Tlv8.decode(req)
+        res = [ Tlv8.Tag.STATE, PairingState.M2 ]
+        count = 0
+        for file in os.listdir("./pairings/"):
+            if file.endswith(".hap.pub"):
+                if count > 0:
+                    res.extend([Tlv8.Tag.SEPARATOR, None])
+                device_pairing_file = open("./pairings/" + file, "rb")
+                device_identifyer = file.replace(".hap.pub", "").upper()
+                device_ltpk = device_pairing_file.read()
+                device_pairing_file.close()
+
+                res.extend([Tlv8.Tag.IDENTIFIER,
+                            device_identifyer.encode('utf8'),
+                            Tlv8.Tag.PUBLICKEY,
+                            device_ltpk,
+                            Tlv8.Tag.PERMISSIONS,
+                            b'\x01'])
+                count = count + 1
+        return Tlv8.encode(res)
+
+    def configure(self):
+        return self.accessory_id, self.accessory_ltpk
 
     def pair_setup_m1_m2(self):
         self.ctx = srp.SRPServer(b"Pair-Setup", b"3939")
